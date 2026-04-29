@@ -2,7 +2,8 @@
 
 A personal finance dashboard built with Streamlit. Track your stock portfolio and bank accounts in one place, with all values converted to TWD for a unified view.
 
-![CI](https://github.com/<your-username>/Claude-Finance/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/AfricanxAdmiral/Personal_Finace/actions/workflows/ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/AfricanxAdmiral/Personal_Finace/branch/main/graph/badge.svg)](https://codecov.io/gh/AfricanxAdmiral/Personal_Finace)
 
 ---
 
