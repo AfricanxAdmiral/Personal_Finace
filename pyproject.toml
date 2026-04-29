@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+testpaths  = ["tests"]
+pythonpath = ["."]
+addopts    = "--cov=finace --cov-report=term-missing --cov-report=xml --cov-report=html"
+
+[tool.coverage.run]
+source = ["finace"]
+omit   = ["finace/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under   = 80
