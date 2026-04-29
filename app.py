@@ -321,7 +321,7 @@ def page_charts() -> None:
         with st.spinner("Fetching historical data…"):
             fig = charts.portfolio_fig(positions, fetch_fn=cached_history)
         if fig:
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.error("Could not build chart.")
     else:
@@ -334,7 +334,7 @@ def page_charts() -> None:
         with st.spinner(f"Fetching history for {pos.ticker}…"):
             fig = charts.position_fig(pos, fetch_fn=cached_history)
         if fig:
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.error(f"No historical data for {pos.ticker}.")
 
@@ -400,7 +400,7 @@ def page_performance() -> None:
     # ── Drawdown chart ─────────────────────────────────────────────────────────
     dd_fig = charts.drawdown_fig(positions, fetch_fn=cached_history)
     if dd_fig:
-        st.plotly_chart(dd_fig, width="stretch")
+        st.plotly_chart(dd_fig, use_container_width=True)
 
     st.divider()
 
@@ -474,7 +474,7 @@ def page_lookup() -> None:
             height=340,
             showlegend=False,
         )
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
 
 # ── Overview page ─────────────────────────────────────────────────────────────
@@ -569,7 +569,7 @@ def page_overview() -> None:
         if not values or sum(v for v in values if v > 0) == 0:
             return None
         base = {k: v for k, v in charts.PLOTLY_BASE.items()
-                if k not in ("xaxis", "yaxis", "hovermode")}
+                if k not in ("xaxis", "yaxis", "hovermode", "margin")}
         fig = go.Figure(go.Pie(
             labels=labels,
             values=values,
@@ -594,15 +594,24 @@ def page_overview() -> None:
             ["Stocks", "Banking"], [stock_twd, bank_twd],
             "Stocks vs Banking", colors=["#58a6ff", "#3fb950"],
         )
-        st.plotly_chart(fig, width="stretch") if fig else st.info("No data yet.")
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No data yet.")
 
     with ch2:
         fig = _donut(stock_chart_labels, stock_chart_values, "By Stock")
-        st.plotly_chart(fig, width="stretch") if fig else st.info("No open positions.")
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No open positions.")
 
     with ch3:
         fig = _donut(bank_chart_labels, bank_chart_values, "By Account")
-        st.plotly_chart(fig, width="stretch") if fig else st.info("No bank accounts.")
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No bank accounts.")
 
     st.divider()
 

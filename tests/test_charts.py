@@ -145,3 +145,39 @@ def test_drawdown_fig_update_layout_no_duplicate_keys(open_pos, mock_fetch):
     # and as explicit kwargs — that raises TypeError at render time.
     fig = drawdown_fig([open_pos], fetch_fn=mock_fetch)
     assert fig is not None  # would raise TypeError before this fix
+
+
+# ── PLOTLY_BASE key-conflict guard ─────────────────────────────────────────────
+# Any function that does update_layout(**PLOTLY_BASE, somekey=...) will raise
+# TypeError if PLOTLY_BASE already contains that key.  These tests enumerate
+# every key in PLOTLY_BASE so that adding a new key surfaces here immediately.
+
+def test_plotly_base_known_keys():
+    from finace.charts import PLOTLY_BASE
+    assert set(PLOTLY_BASE.keys()) == {
+        "plot_bgcolor", "paper_bgcolor", "font_color",
+        "legend", "xaxis", "yaxis", "hovermode", "margin",
+    }, (
+        "PLOTLY_BASE has unexpected keys — check every update_layout(**base, ...) "
+        "call and add the new key to the strip-list where it conflicts."
+    )
+
+def test_donut_strip_excludes_all_conflicting_base_keys():
+    # Simulate what _donut does: strip axis/hovermode/margin from PLOTLY_BASE,
+    # then call update_layout with explicit margin= and title=.
+    # This must not raise TypeError.
+    from finace.charts import PLOTLY_BASE
+    import plotly.graph_objects as _go
+
+    strip = {"xaxis", "yaxis", "hovermode", "margin"}
+    base  = {k: v for k, v in PLOTLY_BASE.items() if k not in strip}
+
+    fig = _go.Figure(_go.Pie(labels=["A", "B"], values=[60, 40]))
+    # Would raise TypeError if 'margin' were still in base:
+    fig.update_layout(
+        **base,
+        title=dict(text="test", font_size=13, x=0.5),
+        height=300,
+        showlegend=True,
+        margin=dict(t=50, b=10, l=10, r=10),
+    )  # passes iff no duplicate keys
