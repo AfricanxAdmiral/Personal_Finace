@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import plotly.graph_objects as go
 
-from finace.charts import drawdown_fig, portfolio_fig, position_fig
+from finace.charts import benchmark_fig, drawdown_fig, portfolio_fig, position_fig
 from finace.portfolio import Position
 
 
@@ -181,3 +181,51 @@ def test_donut_strip_excludes_all_conflicting_base_keys():
         showlegend=True,
         margin=dict(t=50, b=10, l=10, r=10),
     )  # passes iff no duplicate keys
+
+
+# ── benchmark_fig ──────────────────────────────────────────────────────────────
+
+def test_benchmark_fig_returns_figure(open_pos, mock_fetch):
+    assert isinstance(benchmark_fig([open_pos], fetch_fn=mock_fetch), go.Figure)
+
+def test_benchmark_fig_empty_positions_returns_none():
+    assert benchmark_fig([]) is None
+
+def test_benchmark_fig_no_portfolio_data_returns_none(open_pos):
+    assert benchmark_fig([open_pos], fetch_fn=lambda t, s, e: pd.Series(dtype=float)) is None
+
+def test_benchmark_fig_no_spy_data_returns_none(open_pos, fake_prices):
+    def fetch_no_spy(ticker, start, end):
+        return pd.Series(dtype=float) if ticker == "SPY" else fake_prices
+    assert benchmark_fig([open_pos], fetch_fn=fetch_no_spy) is None
+
+def test_benchmark_fig_has_two_traces(open_pos, mock_fetch):
+    fig = benchmark_fig([open_pos], fetch_fn=mock_fetch)
+    assert len(fig.data) == 2
+
+def test_benchmark_fig_has_portfolio_trace(open_pos, mock_fetch):
+    names = [t.name for t in benchmark_fig([open_pos], fetch_fn=mock_fetch).data]
+    assert any("Portfolio" in n for n in names)
+
+def test_benchmark_fig_has_spy_trace(open_pos, mock_fetch):
+    names = [t.name for t in benchmark_fig([open_pos], fetch_fn=mock_fetch).data]
+    assert any("SPY" in n or "S&P" in n for n in names)
+
+def test_benchmark_fig_portfolio_starts_at_zero(open_pos, mock_fetch):
+    fig = benchmark_fig([open_pos], fetch_fn=mock_fetch)
+    port_trace = next(t for t in fig.data if "Portfolio" in t.name)
+    assert port_trace.y[0] == pytest.approx(0.0)
+
+def test_benchmark_fig_spy_starts_at_zero(open_pos, mock_fetch):
+    fig = benchmark_fig([open_pos], fetch_fn=mock_fetch)
+    spy_trace = next(t for t in fig.data if "SPY" in t.name or "S&P" in t.name)
+    assert spy_trace.y[0] == pytest.approx(0.0)
+
+def test_benchmark_fig_uses_default_fetch_when_none(open_pos, monkeypatch):
+    import finace.stock as st
+    monkeypatch.setattr(st, "fetch_history", lambda t, s, e: pd.Series(dtype=float))
+    assert benchmark_fig([open_pos]) is None
+
+def test_benchmark_fig_title_contains_spy(open_pos, mock_fetch):
+    title = benchmark_fig([open_pos], fetch_fn=mock_fetch).layout.title.text
+    assert "SPY" in title or "S&P" in title

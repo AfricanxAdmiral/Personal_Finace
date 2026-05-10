@@ -4,7 +4,7 @@ import pytest
 from datetime import date, timedelta
 from unittest.mock import MagicMock, call
 
-from finace.stock import fetch_history, get_current_price, get_stock_info
+from finace.stock import fetch_history, get_current_price, get_stock_info, get_daily_change_pct
 
 # All tests use a temporary SQLite DB so they never pollute or read the real cache.
 pytestmark = pytest.mark.usefixtures("tmp_cache")
@@ -12,9 +12,10 @@ pytestmark = pytest.mark.usefixtures("tmp_cache")
 
 # ── Mock factory ───────────────────────────────────────────────────────────────
 
-def _make_ticker(price=175.5, info=None, history_df=None):
+def _make_ticker(price=175.5, prev_close=170.0, info=None, history_df=None):
     mock = MagicMock()
     mock.fast_info.last_price = price
+    mock.fast_info.previous_close = prev_close
     mock.info = info or {
         "longName": "Apple Inc.",
         "currency": "USD",
@@ -200,3 +201,41 @@ def test_fetch_history_passes_correct_dates_to_yfinance(monkeypatch):
     monkeypatch.setattr("finace.stock.yf.Ticker", capturing_ticker)
     fetch_history("AAPL", "2024-01-02", "2024-01-06")
     assert calls[0]["start"] == "2024-01-02"
+
+
+# ── get_daily_change_pct ───────────────────────────────────────────────────────
+
+def test_daily_change_pct_positive(monkeypatch):
+    # price 182.0, prev_close 170.0 → +7.058…%
+    monkeypatch.setattr("finace.stock.yf.Ticker", lambda t: _make_ticker(price=182.0, prev_close=170.0))
+    result = get_daily_change_pct("AAPL")
+    assert result == pytest.approx((182.0 - 170.0) / 170.0 * 100)
+
+def test_daily_change_pct_negative(monkeypatch):
+    monkeypatch.setattr("finace.stock.yf.Ticker", lambda t: _make_ticker(price=160.0, prev_close=170.0))
+    result = get_daily_change_pct("AAPL")
+    assert result == pytest.approx((160.0 - 170.0) / 170.0 * 100)
+
+def test_daily_change_pct_zero_change(monkeypatch):
+    monkeypatch.setattr("finace.stock.yf.Ticker", lambda t: _make_ticker(price=170.0, prev_close=170.0))
+    assert get_daily_change_pct("AAPL") == pytest.approx(0.0)
+
+def test_daily_change_pct_none_when_last_price_none(monkeypatch):
+    monkeypatch.setattr("finace.stock.yf.Ticker", lambda t: _make_ticker(price=None, prev_close=170.0))
+    assert get_daily_change_pct("AAPL") is None
+
+def test_daily_change_pct_none_when_prev_close_none(monkeypatch):
+    monkeypatch.setattr("finace.stock.yf.Ticker", lambda t: _make_ticker(price=175.5, prev_close=None))
+    assert get_daily_change_pct("AAPL") is None
+
+def test_daily_change_pct_none_when_prev_close_zero(monkeypatch):
+    monkeypatch.setattr("finace.stock.yf.Ticker", lambda t: _make_ticker(price=175.5, prev_close=0))
+    assert get_daily_change_pct("AAPL") is None
+
+def test_daily_change_pct_none_on_exception(monkeypatch):
+    monkeypatch.setattr("finace.stock.yf.Ticker", lambda t: (_ for _ in ()).throw(Exception("network error")))
+    assert get_daily_change_pct("AAPL") is None
+
+def test_daily_change_pct_returns_float(monkeypatch):
+    monkeypatch.setattr("finace.stock.yf.Ticker", lambda t: _make_ticker(price=182.0, prev_close=170.0))
+    assert isinstance(get_daily_change_pct("AAPL"), float)

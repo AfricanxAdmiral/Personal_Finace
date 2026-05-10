@@ -234,3 +234,134 @@ def test_current_balance_can_go_negative():
     bank.add_transaction(a.id, "withdrawal", 200.0, date(2024, 1, 2))
     _, txs = bank.load()
     assert bank.current_balance(a.id, txs, a.initial_balance) == pytest.approx(-100.0)
+
+
+# ── update_transaction ─────────────────────────────────────────────────────────
+
+def test_update_transaction_returns_transaction():
+    a  = bank.add_account("X", "Checking", 0.0)
+    tx = bank.add_transaction(a.id, "deposit", 100.0, date(2024, 1, 2))
+    result = bank.update_transaction(tx.id, "withdrawal", 50.0, date(2024, 2, 1))
+    assert result is not None
+
+def test_update_transaction_unknown_id_returns_none():
+    assert bank.update_transaction(999, "deposit", 10.0, date(2024, 1, 1)) is None
+
+def test_update_transaction_changes_type():
+    a  = bank.add_account("X", "Checking", 0.0)
+    tx = bank.add_transaction(a.id, "deposit", 100.0, date(2024, 1, 2))
+    bank.update_transaction(tx.id, "withdrawal", 100.0, date(2024, 1, 2))
+    _, txs = bank.load()
+    assert txs[0].type == "withdrawal"
+
+def test_update_transaction_changes_amount():
+    a  = bank.add_account("X", "Checking", 0.0)
+    tx = bank.add_transaction(a.id, "deposit", 100.0, date(2024, 1, 2))
+    bank.update_transaction(tx.id, "deposit", 250.0, date(2024, 1, 2))
+    _, txs = bank.load()
+    assert txs[0].amount == pytest.approx(250.0)
+
+def test_update_transaction_changes_date():
+    a  = bank.add_account("X", "Checking", 0.0)
+    tx = bank.add_transaction(a.id, "deposit", 100.0, date(2024, 1, 2))
+    bank.update_transaction(tx.id, "deposit", 100.0, date(2024, 6, 15))
+    _, txs = bank.load()
+    assert txs[0].date == "2024-06-15"
+
+def test_update_transaction_changes_description():
+    a  = bank.add_account("X", "Checking", 0.0)
+    tx = bank.add_transaction(a.id, "deposit", 100.0, date(2024, 1, 2), "old")
+    bank.update_transaction(tx.id, "deposit", 100.0, date(2024, 1, 2), "new note")
+    _, txs = bank.load()
+    assert txs[0].description == "new note"
+
+def test_update_transaction_clears_description_when_none():
+    a  = bank.add_account("X", "Checking", 0.0)
+    tx = bank.add_transaction(a.id, "deposit", 100.0, date(2024, 1, 2), "old")
+    bank.update_transaction(tx.id, "deposit", 100.0, date(2024, 1, 2), None)
+    _, txs = bank.load()
+    assert txs[0].description is None
+
+def test_update_transaction_does_not_affect_others():
+    a  = bank.add_account("X", "Checking", 0.0)
+    t1 = bank.add_transaction(a.id, "deposit",    100.0, date(2024, 1, 2))
+    t2 = bank.add_transaction(a.id, "withdrawal",  50.0, date(2024, 1, 3))
+    bank.update_transaction(t1.id, "deposit", 999.0, date(2024, 1, 2))
+    _, txs = bank.load()
+    t2_reloaded = next(t for t in txs if t.id == t2.id)
+    assert t2_reloaded.amount == pytest.approx(50.0)
+
+def test_update_transaction_persists():
+    a  = bank.add_account("X", "Checking", 0.0)
+    tx = bank.add_transaction(a.id, "deposit", 100.0, date(2024, 1, 2))
+    bank.update_transaction(tx.id, "withdrawal", 77.0, date(2024, 3, 1), "rent")
+    _, txs = bank.load()
+    saved = next(t for t in txs if t.id == tx.id)
+    assert saved.type == "withdrawal"
+    assert saved.amount == pytest.approx(77.0)
+    assert saved.date == "2024-03-01"
+    assert saved.description == "rent"
+
+
+# ── usd_to ─────────────────────────────────────────────────────────────────────
+
+def test_usd_to_usd_returns_amount_unchanged():
+    assert bank.usd_to(100.0, "USD", None) == pytest.approx(100.0)
+
+def test_usd_to_usd_ignores_rate():
+    assert bank.usd_to(100.0, "USD", 30.0) == pytest.approx(100.0)
+
+def test_usd_to_twd_multiplies_by_rate():
+    assert bank.usd_to(10.0, "TWD", 30.5) == pytest.approx(305.0)
+
+def test_usd_to_jpy_multiplies_by_rate():
+    assert bank.usd_to(1.0, "JPY", 150.0) == pytest.approx(150.0)
+
+def test_usd_to_none_rate_returns_none():
+    assert bank.usd_to(100.0, "TWD", None) is None
+
+def test_usd_to_none_rate_jpy_returns_none():
+    assert bank.usd_to(100.0, "JPY", None) is None
+
+def test_usd_to_zero_amount():
+    assert bank.usd_to(0.0, "TWD", 30.0) == pytest.approx(0.0)
+
+def test_usd_to_unknown_currency_none_rate_returns_none():
+    assert bank.usd_to(100.0, "EUR", None) is None
+
+def test_usd_to_unknown_currency_with_rate_multiplies():
+    # Unknown currency behaves same as any non-USD: multiply by rate
+    assert bank.usd_to(2.0, "EUR", 0.9) == pytest.approx(1.8)
+
+
+# ── fmt_money ──────────────────────────────────────────────────────────────────
+
+def test_fmt_money_twd_no_decimal():
+    assert bank.fmt_money(1234.56, "TWD") == "NT$1,235"
+
+def test_fmt_money_twd_whole_number():
+    assert bank.fmt_money(1000.0, "TWD") == "NT$1,000"
+
+def test_fmt_money_twd_large_with_commas():
+    assert bank.fmt_money(1_000_000.0, "TWD") == "NT$1,000,000"
+
+def test_fmt_money_jpy_no_decimal():
+    assert bank.fmt_money(1234.56, "JPY") == "¥1,235"
+
+def test_fmt_money_jpy_whole_number():
+    assert bank.fmt_money(5000.0, "JPY") == "¥5,000"
+
+def test_fmt_money_jpy_large_with_commas():
+    assert bank.fmt_money(150_000.0, "JPY") == "¥150,000"
+
+def test_fmt_money_usd_two_decimals():
+    assert bank.fmt_money(1234.56, "USD") == "$1,234.56"
+
+def test_fmt_money_usd_whole_number():
+    assert bank.fmt_money(1000.0, "USD") == "$1,000.00"
+
+def test_fmt_money_usd_large_with_commas():
+    assert bank.fmt_money(10_000.5, "USD") == "$10,000.50"
+
+def test_fmt_money_unknown_currency_defaults_to_two_decimals():
+    assert bank.fmt_money(99.9, "EUR") == "$99.90"

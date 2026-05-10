@@ -11,7 +11,7 @@ import finace.charts as charts
 import finace.cache as cache
 import finace.metrics as metrics
 from finace.calculator import compute_metrics
-from finace.stock import get_current_price, get_stock_info, fetch_history
+from finace.stock import get_current_price, get_stock_info, fetch_history, get_daily_change_pct
 
 st.set_page_config(
     page_title="Finance Monitor",
@@ -38,6 +38,11 @@ def cached_history(ticker: str, start: str, end: str) -> pd.Series:
     # fetch_history handles persistent SQLite caching internally;
     # the Streamlit layer just prevents redundant DB reads within one session.
     return fetch_history(ticker, start, end)
+
+
+@st.cache_data(ttl=300)
+def cached_daily_change(ticker: str) -> Optional[float]:
+    return get_daily_change_pct(ticker)
 
 
 @st.cache_data(ttl=300)
@@ -74,6 +79,8 @@ def page_portfolio() -> None:
             if cur_price is None:
                 continue
 
+            day_pct = cached_daily_change(pos.ticker) if status == "Open" else None
+
             m = compute_metrics(pos.shares, pos.buy_price, buy_date, cur_price, sell_date)
             total_cost  += m["total_cost"]
             total_value += m["current_value"]
@@ -83,6 +90,7 @@ def page_portfolio() -> None:
                 "Buy Price":   pos.buy_price,
                 "Buy Date":    pos.buy_date,
                 "Cur Price":   cur_price,
+                "Day %":       day_pct,
                 "Total Cost":  m["total_cost"],
                 "Cur Value":   m["current_value"],
                 "Gain/Loss":   m["gain_loss"],
@@ -109,12 +117,16 @@ def page_portfolio() -> None:
     raw = pd.DataFrame(rows).reset_index(drop=True)
 
     def _color_row(row):
-        val    = raw.loc[row.name, "Gain/Loss"]
-        color  = "color: #3fb950" if val >= 0 else "color: #f85149"
+        gl  = raw.loc[row.name, "Gain/Loss"]
+        dp  = raw.loc[row.name, "Day %"]
         styles = [""] * len(row)
         for col in ("Gain/Loss", "Return %", "Ann. Return"):
             if col in row.index:
-                styles[row.index.get_loc(col)] = color
+                c = "color: #3fb950" if gl >= 0 else "color: #f85149"
+                styles[row.index.get_loc(col)] = c
+        if "Day %" in row.index and dp is not None:
+            c = "color: #3fb950" if dp >= 0 else "color: #f85149"
+            styles[row.index.get_loc("Day %")] = c
         return styles
 
     st.dataframe(
@@ -123,6 +135,7 @@ def page_portfolio() -> None:
             "Shares":      st.column_config.NumberColumn(format="%d"),
             "Buy Price":   st.column_config.NumberColumn(format="$%.2f"),
             "Cur Price":   st.column_config.NumberColumn(format="$%.2f"),
+            "Day %":       st.column_config.NumberColumn(format="%+.2f%%"),
             "Total Cost":  st.column_config.NumberColumn(format="$%.2f"),
             "Cur Value":   st.column_config.NumberColumn(format="$%.2f"),
             "Gain/Loss":   st.column_config.NumberColumn(format="$%+.2f"),
@@ -130,13 +143,25 @@ def page_portfolio() -> None:
             "Ann. Return": st.column_config.NumberColumn(format="%+.2f%%"),
             "Days Held":   st.column_config.NumberColumn(format="%d"),
         },
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
     )
 
 
+def _usd_to(amount_usd: float, currency: str) -> Optional[float]:
+    """Convert a USD amount to *currency* using cached FX rates. Returns None on failure."""
+    pair = {"TWD": "USDTWD=X", "JPY": "USDJPY=X"}.get(currency)
+    rate = cached_fx_rate(pair) if pair else None
+    return bank.usd_to(amount_usd, currency, rate)
+
+
 def page_add() -> None:
     st.title("➕ Add Position")
+
+    accounts, _ = bank.load()
+    acct_options: dict = {"None (no bank deduction)": None}
+    for a in sorted(accounts, key=lambda a: a.name):
+        acct_options[f"{a.name}  ({a.currency})"] = a
 
     with st.form("add_form", clear_on_submit=True):
         ticker = st.text_input("Ticker symbol (e.g. AAPL, NVDA, BTC-USD)").strip().upper()
@@ -147,6 +172,10 @@ def page_add() -> None:
         with col2:
             buy_date = st.date_input("Buy date", value=date.today(), max_value=date.today())
             note     = st.text_input("Note (optional)")
+        if accounts:
+            sel_acct_key = st.selectbox("Deduct from bank account", list(acct_options.keys()))
+        else:
+            sel_acct_key = "None (no bank deduction)"
         submitted = st.form_submit_button("Add Position", type="primary")
 
     if submitted:
@@ -162,6 +191,31 @@ def page_add() -> None:
 
         pos = pf.add_position(ticker, shares, buy_price, buy_date, note or None)
         m   = compute_metrics(shares, buy_price, buy_date, cur_price)
+
+        # ── Bank deduction ─────────────────────────────────────────────────────
+        sel_acct = acct_options.get(sel_acct_key)
+        if sel_acct is not None:
+            total_usd      = shares * buy_price
+            withdrawal_amt = _usd_to(total_usd, sel_acct.currency)
+            if withdrawal_amt is None:
+                st.warning(
+                    f"Could not fetch {sel_acct.currency}/USD rate — "
+                    "bank withdrawal was **not** recorded. Add it manually."
+                )
+            else:
+                if sel_acct.currency in ("TWD", "JPY"):
+                    withdrawal_amt = round(withdrawal_amt)
+                bank.add_transaction(
+                    sel_acct.id,
+                    "withdrawal",
+                    withdrawal_amt,
+                    buy_date,
+                    f"Bought {int(shares)} shares of {ticker} @ ${buy_price:,.2f}",
+                )
+                st.info(
+                    f"Withdrawal of {_fmt_money(withdrawal_amt, sel_acct.currency)} "
+                    f"recorded to **{sel_acct.name}**."
+                )
 
         st.success(f"Position #{pos.id} added: **{info['name']}** ({ticker})")
         c1, c2, c3, c4 = st.columns(4)
@@ -397,6 +451,14 @@ def page_performance() -> None:
 
     st.divider()
 
+    # ── Benchmark comparison chart ─────────────────────────────────────────────
+    with st.spinner("Fetching SPY for benchmark comparison…"):
+        bm_fig = charts.benchmark_fig(positions, fetch_fn=cached_history)
+    if bm_fig:
+        st.plotly_chart(bm_fig, use_container_width=True)
+
+    st.divider()
+
     # ── Drawdown chart ─────────────────────────────────────────────────────────
     dd_fig = charts.drawdown_fig(positions, fetch_fn=cached_history)
     if dd_fig:
@@ -420,14 +482,24 @@ def page_performance() -> None:
         rows.append({
             "Ticker":     pos.ticker,
             "Status":     "Sold" if pos.sell_price else "Open",
-            "Volatility": f"{metrics.annualized_volatility(ph):.2f}%",
-            "Max DD":     f"{metrics.max_drawdown(ph):.2f}%",
-            "Sharpe":     f"{metrics.sharpe_ratio(ph):.2f}",
-            "Sortino":    f"{sr:.2f}" if sr != float("inf") else "∞",
+            "Volatility": metrics.annualized_volatility(ph),
+            "Max DD":     metrics.max_drawdown(ph),
+            "Sharpe":     metrics.sharpe_ratio(ph),
+            "Sortino":    None if sr == float("inf") else sr,
         })
 
     if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True)
+        st.dataframe(
+            pd.DataFrame(rows),
+            column_config={
+                "Volatility": st.column_config.NumberColumn(format="%.2f%%"),
+                "Max DD":     st.column_config.NumberColumn(format="%.2f%%"),
+                "Sharpe":     st.column_config.NumberColumn(format="%.2f"),
+                "Sortino":    st.column_config.NumberColumn(format="%.2f", help="Blank = ∞ (no negative returns)"),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
     else:
         st.info("Not enough history for per-position metrics.")
 
@@ -529,9 +601,9 @@ def page_overview() -> None:
         stock_rows.append({
             "Ticker":      ticker,
             "Shares":      shares,
-            "Price (USD)": f"${price:,.2f}",
-            "Value (USD)": f"${value_usd:,.2f}",
-            "Value (TWD)": f"NT${value_twd:,.0f}",
+            "Price (USD)": price,
+            "Value (USD)": value_usd,
+            "Value (TWD)": value_twd,
         })
 
     # ── Bank accounts ──────────────────────────────────────────────────────────
@@ -550,8 +622,8 @@ def page_overview() -> None:
         bank_rows.append({
             "Account":     a.name,
             "Type":        a.account_type,
-            "Balance":     f"{bal:,.2f} {a.currency}",
-            "Value (TWD)": f"NT${bal_twd:,.0f}",
+            "Balance":     _fmt_money(bal, a.currency),
+            "Value (TWD)": bal_twd,
         })
 
     total_twd = stock_twd + bank_twd
@@ -620,9 +692,14 @@ def page_overview() -> None:
     if stock_rows:
         st.dataframe(
             pd.DataFrame(stock_rows),
-            column_config={"Shares": st.column_config.NumberColumn(format="%d")},
+            column_config={
+                "Shares":      st.column_config.NumberColumn(format="%d"),
+                "Price (USD)": st.column_config.NumberColumn(format="$%.2f"),
+                "Value (USD)": st.column_config.NumberColumn(format="$%.2f"),
+                "Value (TWD)": st.column_config.NumberColumn(format="NT$%.0f"),
+            },
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
         )
     else:
         st.info("No open stock positions.")
@@ -632,12 +709,23 @@ def page_overview() -> None:
     # ── Bank breakdown table ───────────────────────────────────────────────────
     st.subheader("🏦 Bank Accounts")
     if bank_rows:
-        st.dataframe(pd.DataFrame(bank_rows), hide_index=True, width="stretch")
+        st.dataframe(
+            pd.DataFrame(bank_rows),
+            column_config={
+                "Value (TWD)": st.column_config.NumberColumn(format="NT$%.0f"),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
     else:
         st.info("No bank accounts.")
 
 
 # ── Bank pages ────────────────────────────────────────────────────────────────
+
+def _fmt_money(amount: float, currency: str) -> str:
+    return bank.fmt_money(amount, currency)
+
 
 def page_bank_accounts() -> None:
     st.title("🏦 Bank Accounts")
@@ -656,7 +744,7 @@ def page_bank_accounts() -> None:
         rows.append({
             "Account":  a.name,
             "Type":     a.account_type,
-            "Balance":  bal,
+            "Balance":  _fmt_money(bal, a.currency),
             "Currency": a.currency,
             "Note":     a.note or "",
         })
@@ -665,11 +753,8 @@ def page_bank_accounts() -> None:
     st.divider()
     st.dataframe(
         pd.DataFrame(rows),
-        column_config={
-            "Balance": st.column_config.NumberColumn(format="$%.2f"),
-        },
         hide_index=True,
-        width="stretch",
+        use_container_width=True,
     )
 
 
@@ -694,7 +779,7 @@ def page_bank_add_account() -> None:
             st.error("Account name cannot be empty.")
             return
         a = bank.add_account(name.strip(), account_type, initial_balance, currency, note or None)
-        st.success(f"Account #{a.id} '{a.name}' added with opening balance ${initial_balance:,.2f}.")
+        st.success(f"Account #{a.id} '{a.name}' added with opening balance {_fmt_money(initial_balance, currency)}.")
 
 
 def page_bank_transactions() -> None:
@@ -715,18 +800,23 @@ def page_bank_transactions() -> None:
     withdrawals  = sum(t.amount for t in acct_txs if t.type == "withdrawal")
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Current Balance",  f"${bal:,.2f} {acct.currency}")
-    c2.metric("Total Deposited",  f"${deposits:,.2f}")
-    c3.metric("Total Withdrawn",  f"${withdrawals:,.2f}")
+    c1.metric("Current Balance",  _fmt_money(bal, acct.currency))
+    c2.metric("Total Deposited",  _fmt_money(deposits, acct.currency))
+    c3.metric("Total Withdrawn",  _fmt_money(withdrawals, acct.currency))
 
     st.divider()
 
+    _twd = acct.currency in ("TWD", "JPY")
     with st.form("add_tx_form", clear_on_submit=True):
         st.subheader("Record Transaction")
         col1, col2 = st.columns(2)
         with col1:
             tx_type = st.radio("Type", ["Deposit", "Withdrawal"], horizontal=True)
-            amount  = st.number_input("Amount ($)", min_value=0.01, step=0.01, format="%.2f")
+            amount  = st.number_input(
+                "Amount", min_value=1.0 if _twd else 0.01,
+                step=1.0 if _twd else 0.01,
+                format="%.0f" if _twd else "%.2f",
+            )
         with col2:
             tx_date     = st.date_input("Date", value=date.today(), max_value=date.today())
             description = st.text_input("Description (optional)")
@@ -734,9 +824,9 @@ def page_bank_transactions() -> None:
 
     if add_tx:
         if tx_type == "Withdrawal" and amount > bal:
-            st.warning(f"This withdrawal exceeds the current balance (${bal:,.2f}).")
+            st.warning(f"This withdrawal exceeds the current balance ({_fmt_money(bal, acct.currency)}).")
         bank.add_transaction(acct.id, tx_type.lower(), amount, tx_date, description or None)
-        st.success(f"{tx_type} of ${amount:,.2f} recorded.")
+        st.success(f"{tx_type} of {_fmt_money(amount, acct.currency)} recorded.")
         st.rerun()
 
     st.divider()
@@ -761,13 +851,15 @@ def page_bank_transactions() -> None:
                     else "color: #f85149" if col == "Amount"
                     else "" for col in row.index]
 
+        _amt_fmts = {"TWD": "NT$%+.0f", "JPY": "¥%+.0f"}
+        amt_fmt = _amt_fmts.get(acct.currency, "$%+.2f")
         st.dataframe(
             df.style.apply(_color_tx, axis=1),
             column_config={
-                "Amount": st.column_config.NumberColumn(format="$%+.2f"),
+                "Amount": st.column_config.NumberColumn(format=amt_fmt),
             },
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
         )
 
 
@@ -779,8 +871,8 @@ def page_bank_manage() -> None:
         st.info("No accounts to manage.")
         return
 
-    tab_edit, tab_remove_acct, tab_remove_tx = st.tabs(
-        ["Edit Account", "Remove Account", "Remove Transaction"]
+    tab_edit, tab_edit_tx, tab_remove_acct, tab_remove_tx = st.tabs(
+        ["Edit Account", "Edit Transaction", "Remove Account", "Remove Transaction"]
     )
 
     with tab_edit:
@@ -794,8 +886,11 @@ def page_bank_manage() -> None:
             with col1:
                 type_idx = bank.ACCOUNT_TYPES.index(acct_e.account_type) if acct_e.account_type in bank.ACCOUNT_TYPES else 0
                 type_e   = st.selectbox("Account type", bank.ACCOUNT_TYPES, index=type_idx)
+                _twd_e   = acct_e.currency in ("TWD", "JPY")
                 init_e   = st.number_input(
-                    "Opening balance ($)", min_value=0.0, step=0.01, format="%.2f",
+                    "Opening balance", min_value=0.0,
+                    step=1.0 if _twd_e else 0.01,
+                    format="%.0f" if _twd_e else "%.2f",
                     value=float(acct_e.initial_balance),
                 )
             with col2:
@@ -810,6 +905,57 @@ def page_bank_manage() -> None:
             else:
                 bank.update_account(acct_e.id, name_e.strip(), type_e, init_e, curr_e, note_e or None)
                 st.success(f"Account #{acct_e.id} updated.")
+                st.rerun()
+
+    with tab_edit_tx:
+        opts_eta = {f"#{a.id}  {a.name}  ({a.account_type})": a for a in accounts}
+        sel_eta  = st.selectbox("Account", list(opts_eta.keys()), key="edit_tx_acct_sel")
+        acct_eta = opts_eta[sel_eta]
+
+        acct_txs_e = sorted(
+            [t for t in transactions if t.account_id == acct_eta.id],
+            key=lambda t: t.date, reverse=True,
+        )
+        if not acct_txs_e:
+            st.info("No transactions for this account.")
+        else:
+            tx_opts_e = {
+                f"#{t.id}  {t.date}  {t.type.capitalize()}  {_fmt_money(t.amount, acct_eta.currency)}"
+                + (f"  — {t.description}" if t.description else ""): t
+                for t in acct_txs_e
+            }
+            sel_te = st.selectbox("Transaction to edit", list(tx_opts_e.keys()), key="edit_tx_sel")
+            tx_e   = tx_opts_e[sel_te]
+
+            _twd_eta = acct_eta.currency in ("TWD", "JPY")
+            with st.form("edit_tx_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    type_idx_e = 0 if tx_e.type == "deposit" else 1
+                    new_type   = st.radio(
+                        "Type", ["Deposit", "Withdrawal"],
+                        index=type_idx_e, horizontal=True,
+                    )
+                    new_amount = st.number_input(
+                        "Amount", min_value=1.0 if _twd_eta else 0.01,
+                        step=1.0 if _twd_eta else 0.01,
+                        format="%.0f" if _twd_eta else "%.2f",
+                        value=float(tx_e.amount),
+                    )
+                with col2:
+                    new_date = st.date_input(
+                        "Date",
+                        value=date.fromisoformat(tx_e.date),
+                        max_value=date.today(),
+                    )
+                    new_desc = st.text_input("Description (optional)", value=tx_e.description or "")
+                save_tx = st.form_submit_button("Save Changes", type="primary")
+
+            if save_tx:
+                bank.update_transaction(
+                    tx_e.id, new_type.lower(), new_amount, new_date, new_desc or None
+                )
+                st.success(f"Transaction #{tx_e.id} updated.")
                 st.rerun()
 
     with tab_remove_acct:
@@ -839,7 +985,7 @@ def page_bank_manage() -> None:
             st.info("No transactions for this account.")
         else:
             tx_opts = {
-                f"#{t.id}  {t.date}  {t.type.capitalize()}  ${t.amount:,.2f}"
+                f"#{t.id}  {t.date}  {t.type.capitalize()}  {_fmt_money(t.amount, acct_ta.currency)}"
                 + (f"  — {t.description}" if t.description else ""): t
                 for t in acct_txs
             }

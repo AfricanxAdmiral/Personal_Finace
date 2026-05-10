@@ -222,6 +222,84 @@ def portfolio_fig(
     return fig
 
 
+def benchmark_fig(
+    positions: List[Position],
+    fetch_fn: Optional[Callable] = None,
+) -> Optional[go.Figure]:
+    """Cumulative % return of the portfolio vs S&P 500 (SPY), both indexed to 0% at first investment."""
+    from finace.metrics import portfolio_value_series
+
+    if fetch_fn is None:
+        fetch_fn = _stock.fetch_history
+
+    total_value, _ = portfolio_value_series(positions, fetch_fn)
+    nz = total_value[total_value > 0]
+    if nz.empty:
+        return None
+
+    start_str = nz.index[0].date().isoformat()
+    end_str   = (nz.index[-1].date() + timedelta(days=1)).isoformat()
+
+    spy = fetch_fn("SPY", start_str, end_str)
+    if spy.empty:
+        return None
+
+    spy_aligned = spy.reindex(nz.index).ffill().bfill()
+    spy_base    = float(spy_aligned.iloc[0])
+    if spy_base == 0:
+        return None
+
+    port_pct = ((nz / float(nz.iloc[0])) - 1) * 100
+    spy_pct  = ((spy_aligned / spy_base) - 1) * 100
+
+    final_port = float(port_pct.iloc[-1])
+    final_spy  = float(spy_pct.iloc[-1])
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=port_pct.index, y=port_pct.values,
+        mode="lines",
+        line=dict(color="#58a6ff", width=2.5),
+        name="My Portfolio",
+        hovertemplate="%{x|%Y-%m-%d}<br>%{y:+.1f}%<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=spy_pct.index, y=spy_pct.values,
+        mode="lines",
+        line=dict(color="#ffa657", width=2, dash="dot"),
+        name="S&P 500 (SPY)",
+        hovertemplate="%{x|%Y-%m-%d}<br>%{y:+.1f}%<extra></extra>",
+    ))
+
+    fig.add_hline(y=0, line=dict(color="#484f58", width=1, dash="dash"))
+
+    port_label = f"{final_port:+.1f}%"
+    spy_label  = f"{final_spy:+.1f}%"
+    outperform = "outperforming" if final_port >= final_spy else "underperforming"
+
+    base = {k: v for k, v in PLOTLY_BASE.items() if k not in ("yaxis",)}
+    fig.update_layout(
+        **base,
+        title=dict(
+            text=(
+                f"<b>Portfolio vs S&P 500</b>  (since first investment)<br>"
+                f"<span style='font-size:13px;color:#e6edf3'>"
+                f"Portfolio {port_label}  ·  SPY {spy_label}  ·  "
+                f"{'🟢' if final_port >= final_spy else '🔴'} {outperform} S&P 500"
+                f"</span>"
+            ),
+            font_size=17,
+        ),
+        height=400,
+    )
+    fig.update_yaxes(
+        showgrid=True, gridcolor="#21262d",
+        ticksuffix="%", tickformat=".1f",
+    )
+    return fig
+
+
 def drawdown_fig(
     positions: List[Position],
     fetch_fn: Optional[Callable] = None,

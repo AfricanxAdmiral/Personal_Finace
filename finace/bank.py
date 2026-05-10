@@ -149,6 +149,25 @@ def add_transaction(
     return tx
 
 
+def update_transaction(
+    tx_id:       int,
+    tx_type:     str,
+    amount:      float,
+    tx_date:     date,
+    description: Optional[str] = None,
+) -> Optional[Transaction]:
+    accounts, transactions = load()
+    for t in transactions:
+        if t.id == tx_id:
+            t.type        = tx_type
+            t.amount      = amount
+            t.date        = tx_date.isoformat()
+            t.description = description
+            _save(accounts, transactions)
+            return t
+    return None
+
+
 def remove_transaction(tx_id: int) -> bool:
     accounts, transactions = load()
     new_transactions = [t for t in transactions if t.id != tx_id]
@@ -156,6 +175,31 @@ def remove_transaction(tx_id: int) -> bool:
         return False
     _save(accounts, new_transactions)
     return True
+
+
+# ── Formatting ────────────────────────────────────────────────────────────────
+
+def fmt_money(amount: float, currency: str) -> str:
+    """Format *amount* in *currency* with no decimal places for TWD/JPY, two for others."""
+    if currency == "TWD":
+        return f"NT${amount:,.0f}"
+    if currency == "JPY":
+        return f"¥{amount:,.0f}"
+    return f"${amount:,.2f}"
+
+
+# ── Currency conversion ────────────────────────────────────────────────────────
+
+def usd_to(amount_usd: float, currency: str, rate: Optional[float]) -> Optional[float]:
+    """Convert *amount_usd* to *currency* using *rate* (USD → currency).
+
+    Returns None when *rate* is None (fetch failed) and *currency* is not USD.
+    """
+    if currency == "USD":
+        return amount_usd
+    if rate is None:
+        return None
+    return amount_usd * rate
 
 
 # ── Balance helper ─────────────────────────────────────────────────────────────

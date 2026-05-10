@@ -36,6 +36,19 @@ def get_current_price(ticker: str) -> Optional[float]:
         return None
 
 
+def get_daily_change_pct(ticker: str) -> Optional[float]:
+    """Return today's price change as a percentage vs previous close."""
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        last  = fi.last_price
+        prev  = fi.previous_close
+        if last and prev and prev != 0:
+            return (last - prev) / prev * 100.0
+        return None
+    except Exception:
+        return None
+
+
 # ── Stock info ─────────────────────────────────────────────────────────────────
 
 def get_stock_info(ticker: str) -> dict:
